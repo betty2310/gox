@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+SECONDS=0
+step() { printf '\n[%ss] %s\n' "$SECONDS" "$*"; }
+
+step "Checking Linux build dependencies"
+packages=(build-essential curl ca-certificates cmake pkg-config bc fcitx5
+    libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev
+    fcitx5-modules-dev extra-cmake-modules libxkbcommon-dev libgtest-dev)
+missing=()
+for package in "${packages[@]}"; do
+    if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != "install ok installed" ]]; then
+        missing+=("$package")
+    fi
+done
+if ((${#missing[@]})); then
+    sudo apt-get update -qq
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+fi
+
+step "Preparing Rust stable (matching CI), rustfmt, and clippy"
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+        sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+fi
+# Reuse the snapshot's stable compiler rather than checking for updates on every run.
+if ! rustup run stable rustc --version >/dev/null 2>&1; then
+    rustup toolchain install stable --profile minimal
+fi
+rustup default stable
+rustup component add --toolchain stable rustfmt clippy
+
+# Amp and supervised services use login shells; the installer alone cannot
+# expose Cargo there when ~/.bash_profile takes precedence over ~/.profile.
+profile_line='export PATH="$HOME/.cargo/bin:$PATH" # gox orb Rust'
+if ! grep -Fqx "$profile_line" "$HOME/.bash_profile" 2>/dev/null; then
+    printf '\n%s\n' "$profile_line" >> "$HOME/.bash_profile"
+fi
+
+step "Fetching Rust dependencies and warming the release build"
+# Cargo.lock is intentionally ignored by this repository. Cargo reuses the
+# generated lockfile and its normal cache on warm runs.
+cargo fetch --manifest-path core/Cargo.toml
+cargo build --manifest-path core/Cargo.toml --release
+
+step "Preparing the Linux addon and test binaries"
+cmake -S platforms/linux -B platforms/linux/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
+cmake --build platforms/linux/build --parallel "$(nproc)"
+
+step "Setup complete; run cargo test --manifest-path core/Cargo.toml and ctest --test-dir platforms/linux/build --output-on-failure"
+# No secrets, databases, or services are needed for these tests. The root Node
+# package is release automation only; native macOS/Windows UIs need their OS.

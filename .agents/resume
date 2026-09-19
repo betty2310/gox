@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The toolchain and build caches persist in the snapshot. There are no services
+# or credentials to repair on wake; dependency installation belongs in setup.

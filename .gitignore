@@ -36,6 +36,10 @@ obj/
 *.so
 *.profraw
 *.profdata
+platforms/linux/build/
+
+# Orb portal metadata
+.amp/portals/*
 
 # IDE
 .vscode/
